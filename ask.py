@@ -20,40 +20,38 @@ from agents import (
 
 router = APIRouter(prefix="/ask", tags=["Ask"])
 
-# ✅ Load environment variables
+
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY not found in .env")
 
-# ✅ Setup Gemini client
+
 external_client = AsyncOpenAI(
     api_key=GEMINI_API_KEY,
     base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
 )
 
-# ✅ FIXED: Model must receive the same `external_client`
+
 model = OpenAIChatCompletionsModel(
     model="gemini-2.0-flash",
     openai_client=external_client
 )
 
-# ✅ RunConfig (only pass model, not model_provider)
+
 config = RunConfig(
     model=model,
     tracing_disabled=True
 )
 
 
-# ✅ In-memory credit tracking
+
 CREDITS = {}
 DEFAULT_CREDIT_TOKENS = int(os.getenv("DEFAULT_CREDIT_TOKENS", "100000"))
 USER_NAMES = {}
 
-# ----------------------------------------------------------------------
-# 🧠 Utility functions
-# ----------------------------------------------------------------------
+
 
 def get_user_id(header_user_id: Optional[str]) -> str:
     return header_user_id or "anonymous"
@@ -83,28 +81,26 @@ def format_response(text: str) -> str:
     - Adds newlines after list items.
     - Preserves Markdown formatting.
     """
-    # Normalize bullets and numbers
-    text = re.sub(r'(?<=\d\.)\s+', ' ', text)   # fix "1. something"
-    text = re.sub(r'(?<=\d\))\s+', ' ', text)   # fix "1) something"
 
-    # Add newline before each new list item
+    text = re.sub(r'(?<=\d\.)\s+', ' ', text)  
+    text = re.sub(r'(?<=\d\))\s+', ' ', text) 
+
+    
     text = re.sub(r'(\d+\.\s+)', r'\n\1', text)
     text = re.sub(r'(\d+\)\s+)', r'\n\1', text)
     text = re.sub(r'([\-•]\s+)', r'\n\1', text)
 
-    # Replace escaped newlines
+    
     text = text.replace("\\n", "\n")
 
-    # Remove excessive blank lines
+    
     text = re.sub(r'\n{3,}', '\n\n', text)
 
-    # Strip unnecessary spaces
+    
     return text.strip()
 
 
-# ----------------------------------------------------------------------
-# 📥 Request/Response Models
-# ----------------------------------------------------------------------
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -119,9 +115,7 @@ class ChatResponse(BaseModel):
     tokens_used_estimate: Optional[int] = None
     tokens_remaining: Optional[int] = None
 
-# ----------------------------------------------------------------------
-# 🛡️ Guardrail (content control)
-# ----------------------------------------------------------------------
+
 
 @input_guardrail
 async def study_guardrail(ctx, agent: Agent, user_input: str | list) -> GuardrailFunctionOutput:
@@ -139,9 +133,7 @@ async def study_guardrail(ctx, agent: Agent, user_input: str | list) -> Guardrai
 
     return GuardrailFunctionOutput(output_info=None, tripwire_triggered=False)
 
-# ----------------------------------------------------------------------
-# 🤖 Agent definition
-# ----------------------------------------------------------------------
+
 
 def create_study_agent():
     return Agent(
@@ -160,10 +152,10 @@ Your role:
   5. Use headings and subheadings (like '### Definition:' or '### Example:') where appropriate.
 
 Example output:
-### Newton’s Laws of Motion
-1. **First Law (Inertia):** An object remains at rest or uniform motion unless acted upon by a force.
-2. **Second Law (F = ma):** Force equals mass times acceleration.
-3. **Third Law (Action-Reaction):** Every action has an equal and opposite reaction.
+Newton’s Laws of Motion
+1. First Law (Inertia):** An object remains at rest or uniform motion unless acted upon by a force.
+2. Second Law (F = ma):** Force equals mass times acceleration.
+3. Third Law (Action-Reaction):** Every action has an equal and opposite reaction.
 
 Avoid any unrelated, harmful, or non-study topics.
 """,
@@ -171,9 +163,7 @@ Avoid any unrelated, harmful, or non-study topics.
     )
 
 
-# ----------------------------------------------------------------------
-# 💬 Chat Endpoint
-# ----------------------------------------------------------------------
+
 
 @router.post("/api/chat", response_model=ChatResponse)
 async def chat(
@@ -190,7 +180,7 @@ async def chat(
     if not text:
         raise HTTPException(status_code=400, detail="Empty message")
 
-    # Handle greetings
+    
     greetings = ["hi", "hello", "hey", "salam", "assalam", "assalamu", "assalamualaikum"]
     if any(text.lower().startswith(g) for g in greetings):
         return ChatResponse(
@@ -199,7 +189,8 @@ async def chat(
             tokens_remaining=CREDITS[user_id]["tokens_left"]
         )
 
-    # Token management
+   
+   
     max_tokens = min(1024, req.max_tokens or 512)
     estimated_tokens = max(1, int(len(text) / 4)) + max_tokens
 
@@ -222,7 +213,7 @@ async def chat(
             tokens_remaining=CREDITS[user_id]["tokens_left"]
         )
     except Exception as e:
-        # Restore deducted tokens if error occurred
+        
         CREDITS[user_id]["tokens_left"] += estimated_tokens
         raise HTTPException(status_code=500, detail=f"Agent error: {str(e)}")
 
@@ -231,3 +222,4 @@ async def chat(
         tokens_used_estimate=estimated_tokens,
         tokens_remaining=CREDITS[user_id]["tokens_left"]
     )
+

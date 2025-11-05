@@ -1,85 +1,131 @@
 import os
 import json
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from typing import AsyncGenerator
 
-from agents import (
-    Agent,
-    Runner,
-    OpenAIChatCompletionsModel,
-    AsyncOpenAI,
-    RunConfig
-)
+from agents import Agent, Runner, OpenAIChatCompletionsModel, AsyncOpenAI
+from agents import RunConfig
 
-# Create router instead of FastAPI app
-router = APIRouter(prefix="/quiz", tags=["Quiz"])
-
-# Load environment variables
 load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    raise RuntimeError("❌ GEMINI_API_KEY not found in .env file")
 
-# External Gemini client setup
+gemini_api_key = os.getenv("GEMINI_API_KEY")
+if not gemini_api_key:
+    raise RuntimeError("⚠ GEMINI_API_KEY not set in .env file")
+
 external_client = AsyncOpenAI(
-    api_key=GEMINI_API_KEY,
+    api_key=gemini_api_key,
     base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
 )
 
-# Model setup
 model = OpenAIChatCompletionsModel(
     model="gemini-2.0-flash",
-    openai_client=external_client,
+    openai_client=external_client
 )
 
-# Run configuration
 config = RunConfig(
     model=model,
     model_provider=external_client,
-    tracing_disabled=True,
+    tracing_disabled=True
 )
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+router = APIRouter(prefix="/quiz", tags=["Quiz"])
 
 class QuizRequest(BaseModel):
     topic: str
 
-# Define AI Agent
-agent = Agent(
-    name="QuizAgent",
-    instructions=(
-        "You are a quiz generator AI. Generate multiple-choice questions for the given topic. "
-        "Each question must have 4 options and one correct answer. "
-        "Respond ONLY in valid JSON format like this:\n\n"
-        "["
-        "{\"question\": \"What is Python?\", \"options\": [\"Snake\", \"Language\", \"Game\", \"OS\"], \"answer\": \"Language\"},"
-        "{\"question\": \"2+2?\", \"options\": [\"1\", \"2\", \"3\", \"4\"], \"answer\": \"4\"}"
-        "]"
-    ),
+quiz_agent = Agent(
+    name="quiz_agent",
+    instructions="""
+You are a Quiz Generator Agent.
+- If user says "20 quiz", generate exactly 20 quiz questions.
+- If user says "10 quiz", generate 10.
+- If user says "3 quiz", generate 3.
+- Default = 10 quizzes if user doesn't specify number.
+Always respond in pure JSON format. 
+add short explanations.
+
+
+JSON FORMAT:
+[
+  {
+    "question": "...",
+    "options": ["A", "B", "C", "D"],
+    "answer": "Correct option here"
+  }
+]
+
+Rules:
+- Only output JSON
+- No markdown, no text before/after JSON
+- Make sure JSON is valid
+""",
 )
 
-# ---------------------------
-# STREAMING QUIZ ENDPOINT
-# ---------------------------
+def extract_json_from_text(text: str):
+    text = text.strip()
+    if text.startswith("{") or text.startswith("["):
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+
+    start = text.find("[")
+    end = text.rfind("]")
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start:end+1]
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start:end+1]
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+
+    raise ValueError("No valid JSON found in AI output.")
 @router.post("/")
-async def generate_quiz(req: QuizRequest):
-    topic = req.topic.strip()
-    if not topic:
+async def generate_quiz(request: QuizRequest):
+    if not request.topic or not request.topic.strip():
         raise HTTPException(status_code=400, detail="Topic is required")
 
-    async def event_stream() -> AsyncGenerator[str, None]:
-        try:
-            async for event in Runner.stream(agent, f"Generate quiz on {topic}", run_config=config):
-                chunk = getattr(event, "output_text", None)
-                if chunk:
-                    yield chunk
-        except Exception as e:
-            yield f"\n[ERROR] {str(e)}"
+    prompt = f"Generate 5 quiz questions about {request.topic}."
 
-    return StreamingResponse(event_stream(), media_type="text/plain")
+    try:
+        runner = Runner()
+        result = await runner.run(
+            starting_agent=quiz_agent,
+            input=prompt,
+            run_config=config
+        )
 
-# Optional test route
-@router.get("/")
-def root():
-    return {"message": "✅ Quiz router is working!"}
+        text_output = result.output_text if hasattr(result, "output_text") else str(result)
+
+        parsed = extract_json_from_text(text_output)
+
+        if not isinstance(parsed, list):
+            raise ValueError("Parsed JSON is not a list")
+
+        return {"quiz": parsed}
+
+    except ValueError as ve:
+        raise HTTPException(status_code=500, detail=f"AI parse error: {str(ve)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
