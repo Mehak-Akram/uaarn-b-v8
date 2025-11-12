@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+openai
+aiohttp
+youtube-transcript-api
+python-multipart
+python-docx
+PyMuPDF
+reportlab
+pydantic
